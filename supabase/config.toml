@@ -1,4 +1,0 @@
-project_id = "aquaflow-car-wash-os"
-
-[functions.manage-users]
-verify_jwt = true
