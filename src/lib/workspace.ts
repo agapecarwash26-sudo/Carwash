@@ -26,30 +26,21 @@ function isTransientNetworkError(error: unknown) {
 }
 
 async function ensureAuthenticatedSession() {
-  // A profile restored from the offline snapshot is not proof that a valid
-  // Supabase JWT still exists. The RPC is restricted to authenticated users.
   const { data, error } = await supabase.auth.getUser();
   if (!error && data.user) return data.user;
-
-  // Give Supabase one explicit chance to refresh the access token.
   const refreshed = await supabase.auth.refreshSession().catch(() => ({ data: { session: null }, error: null }));
   if (refreshed.data.session?.user) return refreshed.data.session.user;
-
   return null;
 }
 
 async function executeOrQueue<T>(type: string, params: Record<string, unknown>, onlineExecutor: (operationId: string) => Promise<T>): Promise<{ queued: boolean; value?: T; operationId?: string }> {
   const operationId = newOperationId();
-
   if (!(await getForcedOffline()) && await checkBackend()) {
     const user = await ensureAuthenticatedSession();
-
     if (user) {
       try {
         return { queued: false, value: await onlineExecutor(operationId), operationId };
       } catch (error) {
-        // If the JWT expired between the auth check and the RPC, refresh once
-        // and retry the exact same operationId. This prevents duplicate writes.
         const message = String((error as { message?: string })?.message ?? error ?? '');
         if (/401|jwt|token|unauthorized|not authenticated/i.test(message)) {
           const refreshed = await supabase.auth.refreshSession().catch(() => ({ data: { session: null }, error: null }));
@@ -65,7 +56,6 @@ async function executeOrQueue<T>(type: string, params: Record<string, unknown>, 
         } else if (!isTransientNetworkError(error)) {
           throw error;
         }
-        // The SAME operationId is persisted below if the response/network was lost.
       }
     } else {
       throw new Error('AUTH_SESSION_EXPIRED: votre session Supabase a expiré. Reconnectez-vous pour créer ce service.');
@@ -87,16 +77,11 @@ export async function executeOfflineOperation(operation: OfflineOperation): Prom
     p_operation_type: operation.type,
     p_payload: operation.params,
   });
-
   let response = await run();
-
-  // Offline queue synchronization can happen after the access token expired.
-  // Refresh once before declaring the operation failed.
   if (response.error && /401|jwt|token|unauthorized|not authenticated/i.test(response.error.message || '')) {
     const refreshed = await supabase.auth.refreshSession().catch(() => ({ data: { session: null }, error: null }));
     if (refreshed.data.session?.user) response = await run();
   }
-
   if (response.error) throw new Error(response.error.message || 'OFFLINE_SYNC_ERROR');
   return response.data;
 }
@@ -120,8 +105,8 @@ export async function loadWorkspaceData() {
   }
 }
 
-export async function createOrder(input: { orderNumber: string; customerName: string; vehicleLabel: string; totalUsd: number; paymentMethod: string; service: Service; personalItems?: string; vehicleDetails?: string; isFreeVisit?: boolean }) {
-  const params = { orderNumber: input.orderNumber, customerName: input.customerName, vehicleLabel: input.vehicleLabel, totalUsd: input.totalUsd, paymentMethod: input.paymentMethod, serviceId: input.service.id, serviceName: input.service.name, servicePriceUsd: input.service.price_usd, personalItems: input.personalItems || '', vehicleDetails: input.vehicleDetails || '', isFreeVisit: !!input.isFreeVisit };
+export async function createOrder(input: { orderNumber: string; customerName: string; vehicleLabel: string; totalUsd: number; paymentMethod: string; service: Service; personalItems?: string; vehicleDetails?: string; isFreeVisit?: boolean; customerId?: string }) {
+  const params = { orderNumber: input.orderNumber, customerName: input.customerName, vehicleLabel: input.vehicleLabel, totalUsd: input.totalUsd, paymentMethod: input.paymentMethod, serviceId: input.service.id, serviceName: input.service.name, servicePriceUsd: input.service.price_usd, personalItems: input.personalItems || '', vehicleDetails: input.vehicleDetails || '', isFreeVisit: !!input.isFreeVisit, customerId: input.customerId || '' };
   const result = await executeOrQueue('VENTE', params, async (operationId) => {
     const { data, error } = await supabase.rpc('process_offline_operation', { p_operation_id: operationId, p_operation_type: 'VENTE', p_payload: params });
     if (error) throw error; if (!data) throw new Error("La commande n'a pas pu être enregistrée."); return data as Order;
@@ -138,28 +123,14 @@ export async function updateOrderStatus(id: string, status: string) {
   return result;
 }
 
-// ---- Customers & Vehicles ----
-
 export async function loadCustomers(): Promise<Customer[]> {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at')
-    .order('created_at', { ascending: false })
-    .limit(200);
+  const { data, error } = await supabase.from('customers').select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at').order('created_at', { ascending: false }).limit(200);
   if (error) throw error;
   const customers = (data ?? []) as Customer[];
-
-  const { data: vehicles, error: vError } = await supabase
-    .from('vehicles')
-    .select('id, customer_id, plate_number, brand, model, color, vehicle_type');
+  const { data: vehicles, error: vError } = await supabase.from('vehicles').select('id, customer_id, plate_number, brand, model, color, vehicle_type');
   if (vError) throw vError;
-
   const vehicleMap = new Map<string, string>();
-  for (const v of (vehicles ?? []) as Vehicle[]) {
-    if (v.customer_id && !vehicleMap.has(v.customer_id)) {
-      vehicleMap.set(v.customer_id, `${v.brand} ${v.model} · ${v.plate_number}`.trim());
-    }
-  }
+  for (const v of (vehicles ?? []) as Vehicle[]) { if (v.customer_id && !vehicleMap.has(v.customer_id)) { vehicleMap.set(v.customer_id, `${v.brand} ${v.model} · ${v.plate_number}`.trim()); } }
   return customers.map(c => ({ ...c, vehicle_label: vehicleMap.get(c.id) || '—' }));
 }
 
@@ -170,10 +141,7 @@ export async function createCustomer(input: { full_name: string; phone: string; 
 }
 
 export async function loadProducts(): Promise<Product[]> {
-  const { data, error } = await supabase
-    .from('products')
-    .select('id, name, category, unit, current_stock, minimum_stock, unit_cost')
-    .order('name');
+  const { data, error } = await supabase.from('products').select('id, name, category, unit, current_stock, minimum_stock, unit_cost').order('name');
   if (error) throw error;
   return (data ?? []) as Product[];
 }
@@ -191,11 +159,7 @@ export async function recordStockMovement(productId: string, type: string, quant
 }
 
 export async function loadExpenses(): Promise<Expense[]> {
-  const { data, error } = await supabase
-    .from('expenses')
-    .select('id, category, description, amount, currency, status, created_at')
-    .order('created_at', { ascending: false })
-    .limit(100);
+  const { data, error } = await supabase.from('expenses').select('id, category, description, amount, currency, status, created_at').order('created_at', { ascending: false }).limit(100);
   if (error) throw error;
   return (data ?? []) as Expense[];
 }
@@ -209,46 +173,22 @@ export async function createExpense(input: { category: string; description: stri
 export async function updateExpenseStatus(id: string, status: string): Promise<void> { await executeOrQueue('DEPENSE_STATUS', { id, status }, async (operationId) => { const { error } = await supabase.rpc('process_offline_operation', { p_operation_id: operationId, p_operation_type: 'DEPENSE_STATUS', p_payload: { id, status } }); if (error) throw error; }); }
 
 export async function loadEmployees(): Promise<Employee[]> {
-  const { data, error } = await supabase
-    .from('employees')
-    .select('id, full_name, role, phone, is_active, created_at')
-    .order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('employees').select('id, full_name, role, phone, is_active, created_at').order('created_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as Employee[];
 }
 
 export async function createEmployee(input: { full_name: string; role: string; phone: string }): Promise<Employee> {
-  const { data, error } = await supabase
-    .from('employees')
-    .insert({ ...input, is_active: true })
-    .select('id, full_name, role, phone, is_active, created_at')
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) throw new Error("L'employé n'a pas pu être ajouté.");
-  return data as Employee;
+  const { data, error } = await supabase.from('employees').insert({ ...input, is_active: true }).select('id, full_name, role, phone, is_active, created_at').maybeSingle();
+  if (error) throw error; if (!data) throw new Error("L'employé n'a pas pu être ajouté."); return data as Employee;
 }
 
-// ---- Cash Registers ----
-
 export async function loadCashRegister(): Promise<{ register: CashRegister | null; movements: CashMovement[] }> {
-  const { data: reg, error: regError } = await supabase
-    .from('cash_registers')
-    .select('id, opening_usd, opening_cdf, closing_usd, closing_cdf, status, opened_at, closed_at')
-    .eq('status', 'open')
-    .order('opened_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data: reg, error: regError } = await supabase.from('cash_registers').select('id, opening_usd, opening_cdf, closing_usd, closing_cdf, status, opened_at, closed_at').eq('status', 'open').order('opened_at', { ascending: false }).limit(1).maybeSingle();
   if (regError) throw regError;
-
   const register = reg as CashRegister | null;
   if (!register) return { register: null, movements: [] };
-
-  const { data: moves, error: moveError } = await supabase
-    .from('cash_movements')
-    .select('id, cash_register_id, type, amount, currency, reason, created_at')
-    .eq('cash_register_id', register.id)
-    .order('created_at', { ascending: false })
-    .limit(50);
+  const { data: moves, error: moveError } = await supabase.from('cash_movements').select('id, cash_register_id, type, amount, currency, reason, created_at').eq('cash_register_id', register.id).order('created_at', { ascending: false }).limit(50);
   if (moveError) throw moveError;
   return { register, movements: (moves ?? []) as CashMovement[] };
 }
@@ -263,8 +203,6 @@ export async function loadSites(): Promise<Site[]> {
   return (data ?? []) as Site[];
 }
 
-// ---- Audit Logs ----
-
 export async function loadAuditLogs(limit = 100): Promise<{ id: string; action: string; entity_type: string; entity_id: string | null; details: Record<string, unknown>; created_at: string }[]> {
   const { data, error } = await supabase.from('audit_logs').select('id, action, entity_type, entity_id, details, created_at').order('created_at', { ascending: false }).limit(limit);
   if (error) throw error;
@@ -275,17 +213,11 @@ export async function logAction(action: string, entityType: string, entityId: st
   await supabase.from('audit_logs').insert({ action, entity_type: entityType, entity_id: entityId, details });
 }
 
-// ---- Order Items (for receipts) ----
-
 export async function loadOrderItems(orderId: string): Promise<OrderItem[]> {
   const { data, error } = await supabase.from('order_items').select('id, service_name, quantity, unit_price_usd').eq('order_id', orderId);
   if (error) throw error;
   return (data ?? []) as OrderItem[];
 }
-
-// ---- Reports data ----
-
-// ---- Subscriptions ----
 
 export async function createSubscription(input: { customer_id: string; name: string; price_usd: number; allowed_washes: number | null; expires_at: string }): Promise<Subscription> { if (await getForcedOffline() || !(await checkBackend())) throw new Error('OFFLINE_QUEUE: abonnement non pris en charge Offline sans identifiant client local.'); const { data, error } = await supabase.from('subscriptions').insert({ ...input, used_washes: 0, starts_at: new Date().toISOString().slice(0,10), status:'active' }).select('id, customer_id, name, price_usd, allowed_washes, used_washes, starts_at, expires_at, status').maybeSingle(); if(error) throw error; if(!data) throw new Error("L'abonnement n'a pas pu être créé."); return data as Subscription; }
 
@@ -294,8 +226,6 @@ export async function loadCustomersForSelect(): Promise<{ id: string; full_name:
   if (error) throw error;
   return (data ?? []) as { id: string; full_name: string }[];
 }
-
-// ---- Appointments ----
 
 export async function createAppointment(input: { customer_name: string; vehicle_label: string; service_name: string; starts_at: string }): Promise<Appointment> { const result = await executeOrQueue('RENDEZ_VOUS', input as Record<string,unknown>, async (operationId) => { const { data,error }=await supabase.rpc('process_offline_operation',{p_operation_id:operationId,p_operation_type:'RENDEZ_VOUS',p_payload:input}); if(error) throw error; return data as Appointment; }); return offlineResult(result.queued,result.operationId,result.value,{id:result.operationId||newOperationId(),...input,status:'confirmed'} as Appointment); }
 
@@ -323,23 +253,12 @@ export async function loadReportData() {
   return { orders: ordersResult.data ?? [], expenses: expensesResult.data ?? [], items: servicesResult.data ?? [] };
 }
 
-// ---- User Management (admin) ----
-
 export async function loadUsers(): Promise<UserAccount[]> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Non connecté.');
   const apiUrl = `${supabaseUrl}/functions/v1/manage-users`;
-  const res = await fetch(apiUrl, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Erreur ${res.status}`);
-  }
+  const res = await fetch(apiUrl, { method: 'GET', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' } });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Erreur ${res.status}`); }
   const data = await res.json();
   return data as UserAccount[];
 }
@@ -348,18 +267,8 @@ export async function createUser(input: { email: string; password: string; full_
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Non connecté.');
   const apiUrl = `${supabaseUrl}/functions/v1/manage-users`;
-  const res = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Erreur ${res.status}`);
-  }
+  const res = await fetch(apiUrl, { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Erreur ${res.status}`); }
   return res.json();
 }
 
@@ -367,64 +276,31 @@ export async function updateUserRole(id: string, role: string): Promise<void> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Non connecté.');
   const apiUrl = `${supabaseUrl}/functions/v1/manage-users`;
-  const res = await fetch(apiUrl, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ id, role }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Erreur ${res.status}`);
-  }
+  const res = await fetch(apiUrl, { method: 'PUT', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, role }) });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Erreur ${res.status}`); }
 }
 
 export async function deleteUser(id: string): Promise<void> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Non connecté.');
   const apiUrl = `${supabaseUrl}/functions/v1/manage-users?id=${id}`;
-  const res = await fetch(apiUrl, {
-    method: 'DELETE',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Erreur ${res.status}`);
-  }
+  const res = await fetch(apiUrl, { method: 'DELETE', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' } });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Erreur ${res.status}`); }
 }
 
 export async function updateEmployeePassword(userId: string, newPassword: string): Promise<void> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Non connecté.');
   const apiUrl = `${supabaseUrl}/functions/v1/manage-users`;
-  const res = await fetch(apiUrl, {
-    method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ id: userId, password: newPassword }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Erreur ${res.status}`);
-  }
+  const res = await fetch(apiUrl, { method: 'PATCH', headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: userId, password: newPassword }) });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || `Erreur ${res.status}`); }
 }
-
-// ---- App Settings ----
 
 export async function loadSettings(): Promise<Record<string, string>> {
   const { data, error } = await supabase.from('app_settings').select('key, value');
   if (error) throw error;
   const map: Record<string, string> = {};
-  for (const row of data ?? []) {
-    map[row.key] = row.value;
-  }
+  for (const row of data ?? []) { map[row.key] = row.value; }
   return map;
 }
 
@@ -432,25 +308,13 @@ export async function saveSetting(key: string, value: string): Promise<void> {
   await executeOrQueue('SETTING', { key, value }, async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('Non connecté.');
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('site_id')
-      .eq('id', user.id)
-      .maybeSingle();
+    const { data: profile, error: profileError } = await supabase.from('profiles').select('site_id').eq('id', user.id).maybeSingle();
     if (profileError) throw profileError;
     if (!profile?.site_id) throw new Error('Aucun site associé à ce compte.');
-    const { error } = await supabase
-      .from('app_settings')
-      .upsert(
-        { site_id: profile.site_id, key, value, updated_at: new Date().toISOString() },
-        { onConflict: 'site_id,key' },
-      );
+    const { error } = await supabase.from('app_settings').upsert({ site_id: profile.site_id, key, value, updated_at: new Date().toISOString() }, { onConflict: 'site_id,key' });
     if (error) throw error;
   });
 }
-
-
-// ---- Profile ----
 
 export async function loadProfile(userId: string): Promise<{ id: string; full_name: string; email: string; role: string; site_id: string | null } | null> {
   const { data, error } = await supabase.from('profiles').select('id, full_name, email, role, site_id').eq('id', userId).maybeSingle();
@@ -458,85 +322,34 @@ export async function loadProfile(userId: string): Promise<{ id: string; full_na
   return data as { id: string; full_name: string; email: string; role: string; site_id: string | null } | null;
 }
 
-// ---- Customer Search (autocomplete) ----
-
 export async function searchCustomers(query: string): Promise<Customer[]> {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at')
-    .ilike('full_name', `%${query}%`)
-    .order('full_name')
-    .limit(10);
+  const { data, error } = await supabase.from('customers').select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at').ilike('full_name', `%${query}%`).order('full_name').limit(10);
   if (error) throw error;
   return (data ?? []) as Customer[];
 }
 
-// ---- Create Customer with Vehicle ----
-
-export async function createCustomerWithVehicle(input: {
-  full_name: string;
-  phone: string;
-  email?: string;
-  plate_number?: string;
-  brand?: string;
-  model?: string;
-  color?: string;
-  vehicle_type?: string;
-}): Promise<Customer> {
-  const { data: customer, error: custError } = await supabase
-    .from('customers')
-    .insert({ full_name: input.full_name, phone: input.phone, email: input.email || null })
-    .select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at')
-    .maybeSingle();
+export async function createCustomerWithVehicle(input: { full_name: string; phone: string; email?: string; plate_number?: string; brand?: string; model?: string; color?: string; vehicle_type?: string }): Promise<Customer> {
+  const { data: customer, error: custError } = await supabase.from('customers').insert({ full_name: input.full_name, phone: input.phone, email: input.email || null }).select('id, full_name, phone, email, total_spent, visits, loyalty_points, created_at').maybeSingle();
   if (custError) throw custError;
   if (!customer) throw new Error("Le client n'a pas pu être enregistré.");
-
   if (input.plate_number || input.brand || input.model) {
-    const { error: vehError } = await supabase.from('vehicles').insert({
-      customer_id: customer.id,
-      plate_number: input.plate_number || '',
-      brand: input.brand || '',
-      model: input.model || '',
-      color: input.color || '',
-      vehicle_type: input.vehicle_type || 'Berline',
-    });
+    const { error: vehError } = await supabase.from('vehicles').insert({ customer_id: customer.id, plate_number: input.plate_number || '', brand: input.brand || '', model: input.model || '', color: input.color || '', vehicle_type: input.vehicle_type || 'Berline' });
     if (vehError) throw vehError;
   }
-
   return customer as Customer;
 }
 
-// ---- Update Service ----
-
 export async function updateService(id: string, input: { name: string; category: string; price_usd: number; price_cdf: number; duration_minutes: number }): Promise<void> { await executeOrQueue('SERVICE_UPDATE',{id,...input},async(operationId)=>{const {error}=await supabase.rpc('process_offline_operation',{p_operation_id:operationId,p_operation_type:'SERVICE_UPDATE',p_payload:{id,...input}});if(error)throw error;}); }
 
-
-// ---- Loyalty: check if 5th visit (free) ----
-
-export async function checkLoyaltyFreeVisit(customerName: string): Promise<{ isFree: boolean; visitCount: number }> {
-  const { data, error } = await supabase
-    .from('customers')
-    .select('id, visits')
-    .ilike('full_name', customerName)
-    .limit(1)
-    .maybeSingle();
+export async function checkLoyaltyFreeVisit(customerId: string): Promise<{ isFree: boolean; visitCount: number; visitsForFree: number }> {
+  const { data, error } = await supabase.from('customers').select('id, visits').eq('id', customerId).maybeSingle();
   if (error) throw error;
-  if (!data) return { isFree: false, visitCount: 0 };
+  const { data: settings } = await supabase.from('app_settings').select('key, value').in('key', ['loyalty_enabled', 'loyalty_visits_for_free']);
+  const map: Record<string, string> = {};
+  for (const row of settings ?? []) map[row.key] = row.value;
+  const threshold = Math.max(1, Number(map['loyalty_visits_for_free'] ?? 5));
+  if (!data) return { isFree: false, visitCount: 0, visitsForFree: threshold };
+  if (map['loyalty_enabled'] === 'false') return { isFree: false, visitCount: (data.visits as number) + 1, visitsForFree: threshold };
   const visitCount = (data.visits as number) + 1;
-  return { isFree: visitCount % 5 === 0, visitCount };
-}
-
-// ---- Increment customer visits ----
-
-export async function incrementCustomerVisits(customerName: string): Promise<void> {
-  const { data: customer, error: findError } = await supabase
-    .from('customers')
-    .select('id, visits, loyalty_points')
-    .ilike('full_name', customerName)
-    .limit(1)
-    .maybeSingle();
-  if (findError || !customer) return;
-  const newVisits = (customer.visits as number) + 1;
-  const newPoints = (customer.loyalty_points as number) + 10;
-  await supabase.from('customers').update({ visits: newVisits, loyalty_points: newPoints, total_spent: customer.total_spent }).eq('id', customer.id);
+  return { isFree: visitCount % threshold === 0, visitCount, visitsForFree: threshold };
 }
