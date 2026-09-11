@@ -1,2 +1,23 @@
+# Dependencies
 node_modules/
+
+# Build output
+dist/
+
+# Environment variables (contains Supabase keys — never commit)
 .env
+.env.local
+.env.*.local
+
+# Bolt internal
+.bolt/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

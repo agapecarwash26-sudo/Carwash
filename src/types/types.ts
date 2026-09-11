@@ -183,6 +183,7 @@ export type Order = {
   personal_items?: string | null;
   vehicle_details?: string | null;
   is_free_visit?: boolean;
+  customer_id?: string | null;
 };
 
 export type MobileMoneyProvider = 'airtel_money' | 'm_pesa' | 'orange_money';

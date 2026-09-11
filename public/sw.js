@@ -1,5 +1,5 @@
-const VERSION = 'aquaflow-v3';
-const BASE = '/Carwash/';
+const VERSION = 'aquaflow-v4';
+const BASE = self.registration ? self.registration.scope : '/';
 
 const STATIC = [
   BASE,
