@@ -1,0 +1,4 @@
+project_id = "webayzaxiqpmtziasisx"
+
+[functions.manage-users]
+verify_jwt = true
