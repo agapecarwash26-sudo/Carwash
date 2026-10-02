@@ -1,0 +1,22 @@
+{
+  "name": "AquaFlow Car Wash OS",
+  "short_name": "AquaFlow",
+  "description": "Pilotez votre station de lavage : ventes, file d'attente, stock, caisse et rapports.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#0e7490",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='192' height='192' viewBox='0 0 24 24' fill='none'%3E%3Crect width='24' height='24' rx='4' fill='%230e7490'/%3E%3Cpath d='M12 3c-2.5 4-5 7-5 10a5 5 0 0 0 10 0c0-3-2.5-6-5-10z' fill='white'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 24 24' fill='none'%3E%3Crect width='24' height='24' rx='4' fill='%230e7490'/%3E%3Cpath d='M12 3c-2.5 4-5 7-5 10a5 5 0 0 0 10 0c0-3-2.5-6-5-10z' fill='white'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
