@@ -1,4 +1,4 @@
-const VERSION = 'aquaflow-v8-auth-print-fix';
+const VERSION = 'aquaflow-v9-sales-persistence-fix';
 const BASE = self.registration ? self.registration.scope : '/';
 
 const STATIC = [

@@ -1,8 +1,8 @@
 import { supabaseUrl } from './supabase';
 import { supabase } from '@/lib/supabase';
-import { cacheGet, cacheSet, getOfflineSnapshot, getForcedOffline, newOperationId, putOperation, getOperation, saveOrderServerId, getOrderServerId, saveCustomerServerId, getCustomerServerId, type OfflineOperation } from '@/lib/offline';
+import { cacheGet, cacheSet, getOfflineSnapshot, getForcedOffline, newOperationId, putOperation, getOperation, listOperations, saveOrderServerId, getOrderServerId, saveCustomerServerId, getCustomerServerId, type OfflineOperation } from '@/lib/offline';
 import { checkBackend } from '@/lib/network';
-import type { Appointment, CashMovement, CashRegister, Complaint, Customer, Employee, Expense, Order, OrderItem, Product, Service, Site, Subscription, UserAccount, Vehicle } from '@/types';
+import type { Appointment, CashMovement, CashRegister, Complaint, Customer, Employee, Expense, Order, OrderItem, Payment, Product, Service, Site, Subscription, UserAccount, Vehicle } from '@/types';
 
 async function currentActor() {
   const snapshot = await getOfflineSnapshot();
@@ -52,9 +52,9 @@ async function executeOrQueue<T>(type: string, params: Record<string, unknown>, 
         }
         // The SAME operationId is persisted below if the response/network was lost.
       }
-    } else {
-      throw new Error('AUTH_SESSION_EXPIRED: votre session Supabase a expiré. Reconnectez-vous pour créer ce service.');
     }
+    // Session expirée : on met l'opération en file au lieu de la perdre.
+    // Elle sera rejouée (même operationId) après reconnexion.
   }
   const actor = await currentActor();
   if (!actor.userId) throw new Error('AUTH_SESSION_EXPIRED: session utilisateur indisponible.');
@@ -131,10 +131,12 @@ export async function executeOfflineOperation(operation: OfflineOperation): Prom
     }
   }
 
+  // La date d'origine (client) est transmise au serveur : sans elle, une vente
+  // faite hors ligne était datée du moment de la synchronisation.
   const run = async () => supabase.rpc('process_offline_operation', {
     p_operation_id: operation.id,
     p_operation_type: operation.type,
-    p_payload: payload,
+    p_payload: { ...payload, __createdAt: operation.createdAt },
   });
 
   let response = await run();
@@ -186,12 +188,61 @@ async function loadAllPaymentsForSite(siteId: string | null): Promise<Payment[]>
   return all;
 }
 
+type WorkspaceCache = { orders: Order[]; services: Service[]; payments: Payment[] };
+
+/**
+ * Les ventes encore dans la file hors-ligne (pas encore confirmées par Supabase)
+ * doivent rester visibles après une actualisation : on les réinjecte dans les
+ * données affichées. Elles ne sont jamais écrites dans le cache serveur.
+ */
+async function withPendingOperations(data: WorkspaceCache): Promise<WorkspaceCache> {
+  let ops: OfflineOperation[] = [];
+  try { ops = (await listOperations()).filter(o => o.status !== 'synced'); } catch { return data; }
+  if (!ops.length) return data;
+  ops.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const knownNumbers = new Set(data.orders.map(o => o.order_number));
+  const orders = [...data.orders];
+  const payments = [...data.payments];
+  for (const op of ops) {
+    const p = op.params as Record<string, any>;
+    if (op.type === 'VENTE') {
+      if (!p.orderNumber || knownNumbers.has(p.orderNumber)) continue;
+      const subtotal = Math.max(Number(p.subtotalUsd ?? p.totalUsd ?? 0), 0);
+      const discount = Math.min(subtotal, Math.max(Number(p.discountAmountUsd ?? 0), 0));
+      const net = p.isFreeVisit ? 0 : Math.max(subtotal - discount, 0);
+      const currency = String(p.paymentCurrency || 'USD').toUpperCase() === 'CDF' ? 'CDF' : 'USD';
+      const rate = Number(p.exchangeRate) || 2850;
+      orders.unshift({
+        id: op.id, order_number: p.orderNumber, customer_name: p.customerName || 'Client comptoir',
+        vehicle_label: p.vehicleLabel || 'Véhicule à préciser', total_usd: net, paid_usd: net,
+        payment_method: p.isFreeVisit ? 'Offert (fidélité)' : p.paymentMethod, status: 'queued',
+        assigned_employee: 'À affecter', arrived_at: op.createdAt, created_at: op.createdAt,
+        personal_items: p.personalItems || null, vehicle_details: p.vehicleDetails || null,
+        subtotal_usd: subtotal, discount_amount_usd: p.isFreeVisit ? subtotal : discount,
+        payment_currency: currency, payment_amount: currency === 'CDF' ? net * rate : net,
+        exchange_rate: rate, customer_id: p.customerId || null, __offline: true,
+      } as unknown as Order);
+      if (!p.isFreeVisit && net > 0) {
+        payments.unshift({ id: `pending-${op.id}`, order_id: op.id, method: String(p.paymentMethod || ''), amount: currency === 'CDF' ? net * rate : net, currency, status: 'succeeded', created_at: op.createdAt } as Payment);
+      }
+    } else if (op.type === 'CONTROLE' || op.type === 'ANNULATION') {
+      const target = String(p.id ?? '');
+      const status = op.type === 'ANNULATION' ? 'cancelled' : String(p.status ?? '');
+      if (!target || !status) continue;
+      const serverId = await getOrderServerId(target).catch(() => null);
+      for (let i = 0; i < orders.length; i += 1) {
+        if (orders[i].id === target || (serverId && orders[i].id === serverId)) orders[i] = { ...orders[i], status } as Order;
+      }
+    }
+  }
+  return { ...data, orders, payments };
+}
+
 export async function loadWorkspaceData() {
-  type WorkspaceCache = { orders: Order[]; services: Service[]; payments: Payment[] };
   try {
     if (await getForcedOffline() || !navigator.onLine) {
       const cached = await cacheGet<WorkspaceCache>('workspace');
-      if (cached) return cached;
+      if (cached) return withPendingOperations(cached);
     }
     const siteId = (await currentActor()).siteId;
     const [orders, servicesResult, payments] = await Promise.all([
@@ -208,10 +259,10 @@ export async function loadWorkspaceData() {
       payments,
     };
     await cacheSet('workspace', result);
-    return result;
+    return withPendingOperations(result);
   } catch (error) {
     const cached = await cacheGet<WorkspaceCache>('workspace');
-    if (cached) return cached;
+    if (cached) return withPendingOperations(cached);
     throw error;
   }
 }
@@ -247,6 +298,13 @@ export async function createOrder(input: { orderNumber: string; customerName: st
     if (!existing.some(c => c.full_name.trim().toLocaleLowerCase() === input.customerName.trim().toLocaleLowerCase())) {
       await cacheSet('customers', [{ id: localId, full_name: input.customerName.trim(), phone: '', email: null, total_spent: 0, visits: 0, loyalty_points: 0, created_at: new Date().toISOString(), __offline: true } as Customer & { __offline: boolean }, ...existing]);
     }
+  }
+  if (!result.queued && result.value) {
+    try {
+      const ws = await cacheGet<WorkspaceCache>('workspace');
+      const saved = result.value as Order;
+      if (ws && !ws.orders.some(o => o.id === saved.id)) await cacheSet('workspace', { ...ws, orders: [saved, ...ws.orders] });
+    } catch { /* cache best-effort */ }
   }
   const fallback = { id: result.operationId || newOperationId(), order_number: input.orderNumber, customer_name: input.customerName, vehicle_label: input.vehicleLabel, total_usd: input.isFreeVisit ? 0 : input.totalUsd, paid_usd: input.isFreeVisit ? 0 : input.totalUsd, payment_method: input.isFreeVisit ? 'Offert (fidélité)' : input.paymentMethod, status: 'queued', payment_currency: input.paymentCurrency || 'USD', payment_amount: input.totalUsd, amount_tendered: input.amountTendered ?? input.totalUsd, change_amount: input.changeAmount ?? 0, change_currency: input.paymentCurrency || 'USD', exchange_rate: input.exchangeRate, assigned_employee: 'À affecter', arrived_at: new Date().toISOString(), created_at: new Date().toISOString(), personal_items: input.personalItems || null, vehicle_details: input.vehicleDetails || null, customer_id: input.customerId || null } as Order;
   return offlineResult(result.queued, result.operationId, result.value, fallback);
