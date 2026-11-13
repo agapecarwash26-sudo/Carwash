@@ -1,4 +1,4 @@
-const VERSION = 'aquaflow-v9-sales-persistence-fix';
+const VERSION = 'aquaflow-v10-sw-clone-fix';
 const BASE = self.registration ? self.registration.scope : '/';
 
 const STATIC = [
@@ -41,8 +41,12 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(event.request)
         .then(response => {
-          const copy = response.clone();
-          caches.open(VERSION).then(cache => cache.put(event.request, copy));
+          // Clone SYNCHRONEMENT (avant que la page lise le corps) et ne jamais
+          // mettre en cache une erreur (404...) comme page d'accueil.
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(VERSION).then(cache => cache.put(event.request, copy)).catch(() => {});
+          }
           return response;
         })
         .catch(() => caches.match(`${BASE}index.html`))
@@ -57,7 +61,10 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       fetch(event.request)
         .then(response => {
-          if (response.ok) caches.open(VERSION).then(cache => cache.put(event.request, response.clone()));
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(VERSION).then(cache => cache.put(event.request, copy)).catch(() => {});
+          }
           return response;
         })
         .catch(() => caches.match(event.request))
@@ -66,7 +73,10 @@ self.addEventListener('fetch', event => {
   }
   event.respondWith(
     caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
-      if (response.ok) caches.open(VERSION).then(cache => cache.put(event.request, response.clone()));
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(VERSION).then(cache => cache.put(event.request, copy)).catch(() => {});
+      }
       return response;
     }))
   );
