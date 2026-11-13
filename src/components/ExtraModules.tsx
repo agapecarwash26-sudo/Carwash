@@ -323,7 +323,7 @@ export function ConnectedReportsPage() {
 
   function exportCsv() {
     const headers=['Date','Commande','Statut','Paiement','Sous-total USD','Réduction USD','Total USD'];
-    const rows=rawOrders.filter(o=>!['cancelled','refunded'].includes(o.status)).map(o=>[new Date(o.created_at).toISOString(),o.order_number||'',o.status||'',o.payment_method||'',Number(o.subtotal_usd??o.total_usd??0).toFixed(2),Number(o.discount_amount_usd??0).toFixed(2),Number(o.total_usd??0).toFixed(2)]);
+    const rows=rawOrders.filter(o=>!['cancelled','refunded'].includes(o.status)).map(o=>[`${businessDateKey(o.created_at)} ${formatBusinessDateTime(o.created_at,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}`,o.order_number||'',o.status||'',o.payment_method||'',Number(o.subtotal_usd??o.total_usd??0).toFixed(2),Number(o.discount_amount_usd??0).toFixed(2),Number(o.total_usd??0).toFixed(2)]);
     const esc=(v:unknown)=>`"${String(v??'').replace(/"/g,'""')}"`;
     const csv=[headers,...rows].map(r=>r.map(esc).join(';')).join('\r\n');
     const blob=new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`rapport-aquaflow-${businessDateKey()}.csv`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),0);

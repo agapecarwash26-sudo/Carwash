@@ -140,18 +140,12 @@ function Dashboard({ orders, payments, setPage }: { orders: Order[]; payments: P
   const [customStart, setCustomStart] = useState(todayKey);
   const [customEnd, setCustomEnd] = useState(todayKey);
   const dateBounds = (() => {
-    const today = new Date(`${todayKey}T12:00:00`);
-    const start = new Date(today);
-    const end = new Date(today);
-    if (period === 'week') {
-      start.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-    } else if (period === 'month') {
-      start.setDate(1);
-    } else if (period === 'custom') {
-      return { start: customStart || todayKey, end: customEnd || customStart || todayKey };
-    }
-    const key = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-    return { start: key(start), end: key(end) };
+    // Tout est calculé sur la date métier de Lubumbashi (jamais sur l'heure de l'appareil).
+    if (period === 'custom') return { start: customStart || todayKey, end: customEnd || customStart || todayKey };
+    const weekdayIndex = (new Date(`${todayKey}T12:00:00Z`).getUTCDay() + 6) % 7; // lundi = 0
+    if (period === 'week') return { start: addBusinessDays(todayKey, -weekdayIndex), end: todayKey };
+    if (period === 'month') return { start: `${todayKey.slice(0, 7)}-01`, end: todayKey };
+    return { start: todayKey, end: todayKey };
   })();
   const inSelectedPeriod = (date: string | null | undefined) => {
     if (!date) return false;

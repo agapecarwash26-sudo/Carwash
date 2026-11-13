@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { formatBusinessDateTime } from '@/lib/timezone';
 import { Check, KeyRound, MoreHorizontal, Plus, Search, ShieldCheck, Trash2, UserPlus, X, Settings2 } from 'lucide-react';
 import { createUser, deleteUser, loadUsers, loadUserMenuPermissions, saveUserMenuPermissions, updateEmployeePassword, updateUserRole } from '@/lib/workspace';
 import type { Role, UserAccount } from '@/types';
@@ -79,7 +80,7 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
           <tbody>{filtered.map(u => <tr key={u.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/70">
             <td className="px-5 py-4"><div className="flex items-center gap-3"><div className="flex h-9 w-9 items-center justify-center rounded-full bg-cyan-50 text-sm font-bold text-cyan-700">{u.full_name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}</div><div><div className="text-sm font-bold text-slate-800">{u.full_name}{u.id === currentUserId && <span className="ml-2 text-[10px] font-bold uppercase text-cyan-600">Vous</span>}</div><div className="mt-1 text-xs text-slate-400">{u.email}</div></div></div></td>
             <td className="px-3 py-4">{editingRole?.id === u.id ? <select className="input h-9 py-1 text-xs" value={editingRole.role} onChange={e => setEditingRole({ id: u.id, role: e.target.value })} onBlur={() => handleRoleChange(u.id, editingRole.role)}><option value="owner">Propriétaire</option><option value="admin">Administrateur</option><option value="manager">Manager</option><option value="cashier">Caissier</option><option value="operator">Opérateur</option><option value="stock_manager">Gestionnaire de stock</option></select> : <span className={`badge ${u.role === 'owner' ? 'bg-cyan-50 text-cyan-700' : u.role === 'admin' ? 'bg-violet-50 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{roleLabels[u.role] || u.role}</span>}</td>
-            <td className="px-3 py-4 text-sm text-slate-500">{new Date(u.created_at).toLocaleDateString('fr-FR')}</td>
+            <td className="px-3 py-4 text-sm text-slate-500">{formatBusinessDateTime(u.created_at, { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
             <td className="px-5 py-4 text-right"><div className="relative flex justify-end gap-1">
               <button onClick={() => setEditingRole({ id: u.id, role: u.role })} className="icon-button" title="Changer le rôle"><ShieldCheck size={16} /></button><button onClick={() => setPermissionTarget(u)} className="icon-button text-violet-600 hover:bg-violet-50" title="Choisir les menus"><Settings2 size={16}/></button>
               <button onClick={() => setPasswordTarget({ id: u.id, name: u.full_name })} className="icon-button text-cyan-600 hover:bg-cyan-50" title="Changer le mot de passe"><KeyRound size={16} /></button>
